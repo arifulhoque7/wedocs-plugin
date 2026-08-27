@@ -27,6 +27,50 @@ There were historically **two** publishers racing on each tag:
 - **2.2.7** finally fixed it by **re-tracking** `assets/build` (so Appsero shipped it) + adding `.claude`/`FILTERS.md` to `appsero.json` exclude.
 - Then Appsero auto-release was turned **off**, and `assets/build` was **untracked again** (10up now ships it from CI). The untracked→10up pipeline is validated at the **next** release.
 
+## ⚠️ Two traps hit during the 2.5.0 release (27 Aug 2026)
+
+**1. `LAST` detection picks a STRAY tag.** `git ls-remote --tags | sort -V | tail -1` reports
+**`v2.11.12`** — a tag from 24 Jul 2025 pointing at an unrelated develop merge. The real
+previous release was `v2.4.1` (what wp.org served). Version-sorting therefore picks the wrong
+baseline, and check 6 below diffs against the wrong tag. **Pass the real previous tag by hand.**
+Cross-check against what wp.org actually serves:
+```bash
+curl -s "https://plugins.svn.wordpress.org/wedocs/trunk/readme.txt" | grep 'Stable tag'
+```
+(weDocs Pro has the same problem: a stray `v2.2.1` from 1 Apr 2026 over a real `v1.3.2`.)
+
+**2. A local zip WILL fatal on activation if you skip composer.** `wedocs.php` line 48 does
+`require_once __DIR__ . '/vendor/autoload.php'` outright, and `vendor/` is gitignored. Running
+`npm run zip:create` on its own produces a 2.1MB zip that looks perfect and dies instantly:
+```
+Fatal error: require_once(): Failed opening required '.../wedocs/vendor/autoload.php'
+```
+CI is safe — `deploy-org.yml` runs **Composer install (no dev)** at step 42, before the disk-gate
+(51) and the zip (60). Only hand-built zips are exposed. **Always `composer install --no-dev -o`
+before `npm run zip:create`.** The same trap bit the e2e CI workflow, which needed composer added
+before `wp-env start`.
+
+**Note on the `BUILD_DIR` check below:** a plain `grep BUILD_DIR` on `deploy-org.yml` matches the
+*comment* warning against it and reads as a FAIL. Grep for the key instead:
+`grep -E "^[[:space:]]*BUILD_DIR[[:space:]]*:"`.
+
+## ✅ Developer files stay out of the package (verified 2.5.0, with the e2e suite in-tree)
+
+Two *separate* mechanisms, so check both when adding a new dev directory:
+- **The zip** (`bin/zip.js`) → the GitHub Release asset.
+- **`.distignore`** → what 10up rsyncs to SVN.
+
+Audited on the 2.5.0 zip with `tests/e2e-playwright/` present in source — 0 entries for each of
+`tests/`, `e2e`, `.github`, `node_modules`, `playwright`, `src/`, `bin/`, `.claude`,
+`webpack.config`, `package.json`, `composer.json`, `.distignore`, `pnpm-lock`. Shipped
+directories are exactly: `assets includes languages templates vendor` + `wedocs.php` + `readme.txt`.
+```bash
+for pat in "tests/" "e2e" "node_modules" "playwright" "\.claude" "src/" "bin/"; do
+  echo "$pat: $(unzip -l wedocs.vX.Y.Z.zip | grep -cE "$pat")"   # every one must be 0
+done
+unzip -l wedocs.vX.Y.Z.zip | awk '{print $4}' | grep -E '^wedocs/' | cut -d/ -f2 | sort -u
+```
+
 ## 🚨 MANDATORY pre-release verification (run in the tmp clone, STOP if any fails)
 
 ```bash
